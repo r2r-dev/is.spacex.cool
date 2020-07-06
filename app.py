@@ -71,12 +71,33 @@ class SpacexCollector(object):
 
 REGISTRY.register(SpacexCollector())
 
+class InvalidUsage(Exception):
+    status_code = 400
+
+    def __init__(self, message, status_code=None, payload=None):
+        Exception.__init__(self)
+        self.message = message
+        if status_code is not None:
+            self.status_code = status_code
+        self.payload = payload
+
+    def to_dict(self):
+        rv = dict(self.payload or ())
+        rv['message'] = self.message
+        return rv
+
+
 app = Flask(__name__)
 # Add prometheus wsgi middleware to route /api/prom/metrics requests
 app_dispatch = DispatcherMiddleware(app, {
     "/api/prom/metrics": prometheus_client.make_wsgi_app()
 })
 
+@app.errorhandler(InvalidUsage)
+def handle_invalid_usage(error):
+    response = jsonify(error.to_dict())
+    response.status_code = error.status_code
+    return response
 
 @app.route("/api/metrics")
 def get_metrics():
@@ -91,7 +112,11 @@ def get_metrics():
 @app.route("/api/csv/<metric>")
 def get_file(metric):
     restricted_registry = REGISTRY.restricted_registry([metric])
-    samples = restricted_registry.collect()[0].samples
+    try:
+       samples = restricted_registry.collect()[0].samples
+    except IndexError:
+        raise InvalidUsage("Metric not found", status_code=404)
+
     labels = sorted(samples[0].labels.keys())
 
     with StringIO() as f:
